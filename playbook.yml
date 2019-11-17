@@ -1,0 +1,85 @@
+---
+- hosts: web
+  become: yes
+  tasks:
+    - name: Ensure SELinux is not set to enforcing mode
+      lineinfile:
+        path: /etc/selinux/config
+        regexp: '^SELINUX='
+        state: absent
+
+    - name: Ensure hosts are defined in /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        regexp: '{{ item }}'
+        line: '127.0.0.1 {{ item }}'
+      with_items: "{{ groups['web'] }}"
+
+    - name: Install required packages
+      apt:
+        pkg:
+        - nginx
+        - curl
+        - php
+        - php-fpm
+        - php-mysql
+        - php-curl
+        - mariadb-server
+        - supervisor
+        state: latest
+        update_cache: true
+
+    - name: Create MySQL user
+      command: mysql -u root -proot -e "CREATE USER admin IDENTIFIED BY 'admin'; GRANT ALL PRIVILEGES ON *.* TO 'admin'@'%'; FLUSH PRIVILEGES;"
+      ignore_errors: true
+
+    - name: Update MySQL to allow remote connections
+      lineinfile:
+        path: /etc/mysql/mariadb.conf.d/50-server.cnf
+        regexp: 'bind-address'
+        state: absent
+      notify:
+        - restart mysql
+
+    - name: Prepare nginx directories for hosts
+      file:
+        path: /var/www/{{ item }}
+        state: directory
+      with_items: "{{ groups['web'] }}"
+
+    - name: Prepare nginx configs for hosts
+      template:
+        src: templates/nginx_host.j2
+        dest: /etc/nginx/sites-available/default
+      notify:
+        - restart nginx
+
+    - name: Enable all nginx hosts
+      file:
+        src: /etc/nginx/sites-available/default
+        dest: /etc/nginx/sites-enabled/default
+        state: link
+
+    - name: Test nginx config
+      command: nginx -t
+      notify:
+        - restart nginx
+
+    - name: Init nginx hosts
+      copy:
+        src: ./files/index.html
+        dest: /var/www/{{ item }}
+      with_items: "{{ groups['web'] }}"
+      tags:
+        - deploy
+
+  handlers:
+    - name: restart nginx
+      service:
+        name: nginx
+        state: restarted
+
+    - name: restart mysql
+      service:
+        name: mysqld
+        state: restarted
